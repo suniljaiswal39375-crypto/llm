@@ -30,6 +30,7 @@ class ModelConfig:
 
     # Attention mode: "gqa", "mla", or "hybrid_linear" (3:1 Gated DeltaNet + global)
     attention_type: Literal["gqa", "mla", "hybrid_linear"] = "gqa"
+    attention_bias: bool = False  # QKV bias for Qwen2/2.5 HF weight compatibility
     qk_norm: bool = True
     # Sliding-window attention: e.g. sliding_window=512 with swa_ratio=5 => 5 local : 1 global
     sliding_window: int | None = None
