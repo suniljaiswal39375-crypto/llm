@@ -1,34 +1,37 @@
-"""Multi-turn Agentic Web Search & Reasoning Runtime for Nova-LLM.
+"""Multi-turn Agentic Web Search & Reasoning Runtime for Nova-LLM & Llama-3.2-3B/HF Models.
 
 Supports:
+  - Pluggable backends: native `NovaLM` OR Hugging Face / Unsloth `TransformersBackend` (Llama 3.2 3B!)
   - Optional chain-of-thought `<|think|>...</|think|>` extraction
   - Autonomous `<|tool_call|>` execution (`web_search` and `fetch_page`)
   - Multi-hop search rounds (up to `max_search_rounds`)
-  - Streaming SSE events for live browser UIs
+  - Streaming SSE events (`thinking`, `tool_call`, `sources`, `delta`, `done`)
 """
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 import httpx
-import torch
 
+from nova_llm.agent.backends import ChatGeneratorBackend, NovaLMBackend
 from nova_llm.agent.search_engine import HybridSearchBackend, SearchResult, format_search_results
 from nova_llm.agent.search_verifiers import parse_tool_calls
-from nova_llm.inference.generator import generate, stream_generate
-from nova_llm.inference.sampler import SamplingParams
 from nova_llm.models.transformer import NovaLM
 from nova_llm.tokenizer.bpe import ByteBPETokenizer
 
 SEARCH_SYSTEM_PROMPT = (
-    "You are Nova-Search, a web-searching AI. Emit a web_search tool call when factual lookup is needed, "
-    "then synthesize a concise answer strictly grounded in the results with inline citations like [1]."
+    "You are Nova-Search, a web-searching AI. Emit a web_search tool call when factual lookup is needed: "
+    '<|tool_call|>{"name": "web_search", "arguments": {"query": "your concise search query"}}</|tool_call|>. '
+    "After receiving search results, synthesize a clear, accurate answer strictly grounded in the sources "
+    "with inline citations like [1] and [2]. Never fabricate facts or citations."
 )
 
 _THINK_RE = re.compile(r"<\|think\|>(.*?)</\|think\|>", re.DOTALL)
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -42,14 +45,20 @@ def split_thinking_and_answer(text: str) -> tuple[str | None, str]:
     return thinking or None, visible
 
 
-def fetch_web_page_text(url: str, max_chars: int = 1200, timeout: float = 6.0) -> str:
+def fetch_web_page_text(url: str, max_chars: int = 1600, timeout: float = 6.0) -> str:
     """Fetch a public HTTP/HTTPS web page and return cleaned plain text excerpt."""
     if not url.startswith(("http://", "https://")):
         return "Invalid URL: must start with http:// or https://"
     try:
-        resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+        resp = httpx.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NovaSearchBot/1.0)"},
+            timeout=timeout,
+            follow_redirects=True,
+        )
         resp.raise_for_status()
-        plain = _HTML_TAG_RE.sub(" ", resp.text)
+        cleaned = _SCRIPT_STYLE_RE.sub(" ", resp.text)
+        plain = html.unescape(_HTML_TAG_RE.sub(" ", cleaned))
         plain = re.sub(r"\s+", " ", plain).strip()
         return plain[:max_chars]
     except Exception as exc:
@@ -67,50 +76,29 @@ class AgentResponse:
 
 
 class SearchAgent:
-    """Runs NovaLM in native agentic web-search, page-fetch, and `<|think|>` reasoning mode."""
+    """Runs NovaLM OR Llama-3.2-3B/HF models in native agentic web-search & reasoning mode."""
 
     def __init__(
         self,
-        model: NovaLM,
-        tokenizer: ByteBPETokenizer,
+        model: NovaLM | None = None,
+        tokenizer: ByteBPETokenizer | None = None,
         search_backend: HybridSearchBackend | None = None,
         max_search_rounds: int = 2,
         top_k_results: int = 3,
+        backend: ChatGeneratorBackend | None = None,
+        system_prompt: str = SEARCH_SYSTEM_PROMPT,
     ) -> None:
-        self.model = model
-        self.tokenizer = tokenizer
+        if backend is not None:
+            self.backend: ChatGeneratorBackend = backend
+        elif model is not None and tokenizer is not None:
+            self.backend = NovaLMBackend(model, tokenizer)
+        else:
+            raise ValueError("Provide either `backend` or both `(model, tokenizer)`")
+
         self.search_backend = search_backend or HybridSearchBackend()
         self.max_search_rounds = max_search_rounds
         self.top_k_results = top_k_results
-
-    def _stop_ids(self) -> list[int]:
-        return [self.tokenizer.eos_id, self.tokenizer.special_to_id["<|im_end|>"]]
-
-    def _clean_text(self, text: str) -> str:
-        return text.replace("<|im_end|>", "").replace("<|eos|>", "").strip()
-
-    def _generate_turn(
-        self,
-        messages: list[dict[str, str]],
-        max_tokens: int = 128,
-        temperature: float = 0.0,
-    ) -> str:
-        prompt_text = self.tokenizer.format_chat(messages, add_generation_prompt=True)
-        ids = torch.tensor(
-            [self.tokenizer.encode(prompt_text, add_bos=True, allow_special=True)], dtype=torch.long
-        )
-        max_ctx = self.model.cfg.max_seq_len - 16
-        if ids.shape[1] > max_ctx:
-            ids = ids[:, -max_ctx:]
-        params = SamplingParams(
-            max_new_tokens=max_tokens,
-            temperature=temperature,
-            repetition_penalty=1.0,
-            stop_token_ids=self._stop_ids(),
-            stop_strings=["<|im_end|>", "<|eos|>"],
-        )
-        res = generate(self.model, ids, params=params, tokenizer=self.tokenizer, use_cache=True)
-        return self._clean_text(res.text or "")
+        self.system_prompt = system_prompt
 
     def _execute_tool(
         self,
@@ -130,11 +118,11 @@ class SearchAgent:
         self,
         user_query: str,
         history: list[dict[str, str]] | None = None,
-        max_tokens: int = 128,
+        max_tokens: int = 256,
         temperature: float = 0.0,
         force_search: bool = False,
     ) -> AgentResponse:
-        messages: list[dict[str, str]] = [{"role": "system", "content": SEARCH_SYSTEM_PROMPT}]
+        messages: list[dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": user_query})
@@ -145,7 +133,9 @@ class SearchAgent:
         thoughts: list[str] = []
 
         for round_idx in range(self.max_search_rounds + 1):
-            turn_text = self._generate_turn(messages, max_tokens=max_tokens, temperature=temperature)
+            turn_text = self.backend.generate_chat(
+                messages, max_tokens=max_tokens, temperature=temperature, repetition_penalty=1.0
+            )
             raw_turns.append(turn_text)
             think_part, visible_part = split_thinking_and_answer(turn_text)
             if think_part:
@@ -190,25 +180,29 @@ class SearchAgent:
     def stream_run(
         self,
         user_query: str,
-        max_tokens: int = 128,
+        max_tokens: int = 256,
         temperature: float = 0.0,
         force_search: bool = False,
     ) -> Iterator[dict[str, Any]]:
-        """Yield structured SSE events: `tool_call`, `sources`, `delta`, `done`."""
+        """Yield structured SSE events: `thinking`, `tool_call`, `sources`, `delta`, `done`."""
         messages: list[dict[str, str]] = [
-            {"role": "system", "content": SEARCH_SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_query},
         ]
-        turn1 = self._generate_turn(messages, max_tokens=96, temperature=temperature)
-        calls = parse_tool_calls(turn1)
+        turn1 = self.backend.generate_chat(
+            messages, max_tokens=min(128, max_tokens), temperature=temperature, repetition_penalty=1.0
+        )
+        think1, visible1 = split_thinking_and_answer(turn1)
+        if think1:
+            yield {"type": "thinking", "content": think1}
 
+        calls = parse_tool_calls(turn1)
         if not calls and force_search:
             calls = [{"name": "web_search", "arguments": {"query": user_query}}]
             turn1 = f'<|tool_call|>{{"name": "web_search", "arguments": {{"query": "{user_query}"}}}}</|tool_call|>'
 
         if not calls:
-            _, visible = split_thinking_and_answer(turn1)
-            yield {"type": "delta", "content": visible}
+            yield {"type": "delta", "content": visible1}
             yield {"type": "done", "used_search": False}
             return
 
@@ -224,23 +218,8 @@ class SearchAgent:
         messages.append({"role": "assistant", "content": turn1})
         messages.append({"role": "tool", "content": f"<|tool_result|>{tool_text}</|tool_result|>"})
 
-        prompt_text = self.tokenizer.format_chat(messages, add_generation_prompt=True)
-        ids = torch.tensor(
-            [self.tokenizer.encode(prompt_text, add_bos=True, allow_special=True)], dtype=torch.long
-        )
-        max_ctx = self.model.cfg.max_seq_len - 16
-        if ids.shape[1] > max_ctx:
-            ids = ids[:, -max_ctx:]
-
-        params = SamplingParams(
-            max_new_tokens=max_tokens,
-            temperature=temperature,
-            repetition_penalty=1.0,
-            stop_token_ids=self._stop_ids(),
-            stop_strings=["<|im_end|>", "<|eos|>"],
-        )
-        for chunk in stream_generate(self.model, ids, self.tokenizer, params=params):
-            clean = chunk.replace("<|im_end|>", "").replace("<|eos|>", "")
-            if clean:
-                yield {"type": "delta", "content": clean}
+        for chunk in self.backend.stream_chat(
+            messages, max_tokens=max_tokens, temperature=temperature, repetition_penalty=1.0
+        ):
+            yield {"type": "delta", "content": chunk}
         yield {"type": "done", "used_search": True}
