@@ -12,6 +12,7 @@ Trains the model in 4 clean, independently resumable parts:
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import time
 from pathlib import Path
@@ -301,7 +302,7 @@ def _save_stage(path: Path, model: NovaLM, stage: str, metrics: dict) -> None:
     torch.save(
         {
             "stage": stage,
-            "model_config": model.cfg.to_dict(),
+            "model_config": asdict(model.cfg),
             "model": model.state_dict(),
             "metrics": metrics,
         },
