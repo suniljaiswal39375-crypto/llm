@@ -38,7 +38,11 @@ class _FakeHFTokenizer:
         return 128009 if tok == "<|eot_id|>" else -1
 
     def __call__(self, texts: list[str], return_tensors: str = "pt") -> dict[str, torch.Tensor]:
-        return {"input_ids": torch.tensor([[1, 2, 3, 4]], dtype=torch.long)}
+        # Include token_type_ids to verify TransformersBackend strips it before model.generate()
+        return {
+            "input_ids": torch.tensor([[1, 2, 3, 4]], dtype=torch.long),
+            "token_type_ids": torch.tensor([[0, 0, 0, 0]], dtype=torch.long),
+        }
 
     def decode(self, ids: Any, skip_special_tokens: bool = True) -> str:
         out = self._responses[min(self._idx, len(self._responses) - 1)]
@@ -53,6 +57,7 @@ class _FakeHFModel:
         yield torch.zeros(10)
 
     def generate(self, input_ids: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        assert "token_type_ids" not in kwargs, "token_type_ids must be stripped before Llama generate()"
         # Append 2 dummy generated token IDs after prompt
         extra = torch.tensor([[42, 43]], dtype=torch.long)
         return torch.cat([input_ids, extra], dim=1)
@@ -115,7 +120,11 @@ def test_colab_notebook_json_and_python_cells_valid() -> None:
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
     assert nb["nbformat"] == 4
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
-    assert len(code_cells) >= 8
+    assert len(code_cells) == 9
+    full_src = "\n".join("".join(c["source"]) for c in code_cells)
+    assert 'report_to="none"' in full_src
+    assert 'sys.path.insert(0,' in full_src
+    assert 'from nova_llm.agent import' in "".join(code_cells[0]["source"])
     for cell in code_cells:
         src = "".join(cell["source"])
         # Replace IPython `!` shell magics with indented `pass` for AST syntax check
@@ -124,3 +133,12 @@ def test_colab_notebook_json_and_python_cells_valid() -> None:
             for line in src.splitlines()
         ]
         ast.parse("\n".join(py_lines))
+
+
+def test_force_search_escapes_quotes_safely() -> None:
+    tok = _FakeHFTokenizer(["Direct answer without tool call", 'Quoted "MuonClip" answer [1].'])
+    backend = TransformersBackend(model=_FakeHFModel(), tokenizer=tok, model_name="Llama-3.2-3B-Test")
+    agent = SearchAgent(backend=backend, search_backend=HybridSearchBackend())
+    res = agent.run('Explain "MuonClip" in Kimi K2', force_search=True, temperature=0.0)
+    assert res.used_search is True
+    assert res.tool_calls[0]["arguments"]["query"] == 'Explain "MuonClip" in Kimi K2'

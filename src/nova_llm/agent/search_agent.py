@@ -11,6 +11,7 @@ Supports:
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterator
@@ -145,7 +146,9 @@ class SearchAgent:
             if not calls and force_search and round_idx == 0:
                 calls = [{"name": "web_search", "arguments": {"query": user_query}}]
                 turn_text = (
-                    f'<|tool_call|>{{"name": "web_search", "arguments": {{"query": "{user_query}"}}}}</|tool_call|>'
+                    "<|tool_call|>"
+                    + json.dumps({"name": "web_search", "arguments": {"query": user_query}})
+                    + "</|tool_call|>"
                 )
 
             if calls and round_idx < self.max_search_rounds:
@@ -199,7 +202,11 @@ class SearchAgent:
         calls = parse_tool_calls(turn1)
         if not calls and force_search:
             calls = [{"name": "web_search", "arguments": {"query": user_query}}]
-            turn1 = f'<|tool_call|>{{"name": "web_search", "arguments": {{"query": "{user_query}"}}}}</|tool_call|>'
+            turn1 = (
+                "<|tool_call|>"
+                + json.dumps({"name": "web_search", "arguments": {"query": user_query}})
+                + "</|tool_call|>"
+            )
 
         if not calls:
             yield {"type": "delta", "content": visible1}

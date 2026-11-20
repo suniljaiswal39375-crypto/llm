@@ -7,8 +7,7 @@ name = "nova-llm"
 version = "0.1.0"
 description = "Frontier 2026 modular LLM engineering suite: SuperBPE, GQA/MLA/Gated-DeltaNet/MoE, MuonClip, FSDP2, SFT/DPO/DAPO/GSPO, Speculative Decoding & Evaluation."
 readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE"]
+license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.5.0",

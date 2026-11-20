@@ -245,6 +245,7 @@ class TransformersBackend:
     ) -> str:
         prompt = self._format_messages(messages)
         inputs = self.tokenizer([prompt], return_tensors="pt")
+        inputs.pop("token_type_ids", None)
         device = self._device()
         inputs = {k: v.to(device) for k, v in inputs.items()}
         prompt_len = inputs["input_ids"].shape[1]
@@ -282,6 +283,7 @@ class TransformersBackend:
 
         prompt = self._format_messages(messages)
         inputs = self.tokenizer([prompt], return_tensors="pt")
+        inputs.pop("token_type_ids", None)
         device = self._device()
         inputs = {k: v.to(device) for k, v in inputs.items()}
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
