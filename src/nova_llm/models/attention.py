@@ -191,9 +191,9 @@ class GroupedQueryAttention(nn.Module):
         self.dropout = cfg.dropout
         self.scale = 1.0 / math.sqrt(self.head_dim)
 
-        self.wq = nn.Linear(cfg.d_model, self.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(cfg.d_model, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(cfg.d_model, self.n_kv_heads * self.head_dim, bias=False)
+        self.wq = nn.Linear(cfg.d_model, self.n_heads * self.head_dim, bias=cfg.attention_bias)
+        self.wk = nn.Linear(cfg.d_model, self.n_kv_heads * self.head_dim, bias=cfg.attention_bias)
+        self.wv = nn.Linear(cfg.d_model, self.n_kv_heads * self.head_dim, bias=cfg.attention_bias)
         self.wo = nn.Linear(self.n_heads * self.head_dim, cfg.d_model, bias=False)
 
         self.q_norm = RMSNorm(self.head_dim, eps=cfg.norm_eps) if cfg.qk_norm else None

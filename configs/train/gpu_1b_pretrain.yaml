@@ -1,0 +1,48 @@
+# Production GPU Pre-Training Recipe: 1B Dense NovaLM + MuonClip + WSD + FSDP2
+# Run with:
+#   torchrun --standalone --nproc_per_node=8 scripts/pretrain.py \
+#     --config configs/train/gpu_1b_pretrain.yaml \
+#     --train-shard data_shards/fineweb_edu/train \
+#     --val-shard data_shards/fineweb_edu/val
+
+output_dir: runs/nova_1b_pretrain
+seed: 42
+max_steps: 40000
+micro_batch_size: 4
+grad_accum_steps: 16
+seq_len: 4096
+precision: bf16
+distributed: fsdp2
+activation_checkpointing: true
+compile_model: true
+log_interval: 10
+eval_interval: 500
+save_interval: 1000
+
+model:
+  vocab_size: 65536
+  d_model: 2048
+  n_layers: 18
+  n_heads: 16
+  n_kv_heads: 4
+  max_seq_len: 8192
+  attention_type: gqa
+  qk_norm: true
+  rope_theta: 500000.0
+  z_loss_weight: 0.0001
+  mtp_depth: 1
+  mtp_loss_weight: 0.3
+  tie_word_embeddings: true
+  dropout: 0.0
+
+optim:
+  optimizer: muonclip
+  lr: 0.0006
+  muon_lr: 0.003
+  weight_decay: 0.1
+  grad_clip: 1.0
+  qk_clip_tau: 100.0
+  lr_schedule: wsd
+  warmup_steps: 1000
+  decay_steps: 6000
+  min_lr_ratio: 0.05
