@@ -1,4 +1,8 @@
-"""OpenAI-compatible FastAPI serving endpoint + Agentic Web Search API & Live Search-Chat UI."""
+"""OpenAI-compatible FastAPI serving endpoint + Agentic Web Search API & Live Search-Chat UI.
+
+Runs seamlessly on EITHER native `NovaLM` checkpoints OR Hugging Face / Unsloth models
+(e.g. Llama 3.2 3B Instruct 4-bit + Google Drive LoRA adapters) via `ChatGeneratorBackend`.
+"""
 
 from __future__ import annotations
 
@@ -27,8 +31,8 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "nova-llm"
     messages: list[ChatMessage]
-    max_tokens: int = Field(default=112, ge=1, le=4096)
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=256, ge=1, le=4096)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     top_p: float = Field(default=0.95, gt=0.0, le=1.0)
     top_k: int = Field(default=0, ge=0)
     min_p: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -39,8 +43,8 @@ class ChatCompletionRequest(BaseModel):
 
 class SearchChatRequest(BaseModel):
     query: str
-    max_tokens: int = Field(default=128, ge=1, le=4096)
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=256, ge=1, le=4096)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     force_search: bool = False
     stream: bool = False
 
@@ -50,7 +54,7 @@ _CHAT_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Nova-Search — Agentic Web-Search LLM</title>
+  <title>Nova-Search — Unified LLM + Live Web Search</title>
   <style>
     :root {
       --bg: #0b0f19;
@@ -83,15 +87,6 @@ _CHAT_HTML = """<!DOCTYPE html>
     .controls { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
     .controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
     .controls input[type=range] { width: 76px; accent-color: var(--accent); }
-    .suggestions {
-      padding: 10px 22px; display: flex; gap: 8px; flex-wrap: wrap; border-bottom: 1px solid var(--border);
-      background: #0e1422;
-    }
-    .chip {
-      background: var(--panel); color: var(--text); border: 1px solid var(--border);
-      border-radius: 999px; padding: 6px 12px; font-size: 12px; cursor: pointer; transition: 0.15s;
-    }
-    .chip:hover { border-color: var(--accent); background: #1a233a; }
     main {
       flex: 1; overflow-y: auto; padding: 20px 22px; display: flex; flex-direction: column; gap: 14px;
       max-width: 940px; width: 100%; margin: 0 auto;
@@ -106,6 +101,11 @@ _CHAT_HTML = """<!DOCTYPE html>
       font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px;
       color: var(--muted); margin-bottom: 6px;
     }
+    .think-box {
+      font-size: 12.5px; color: #cbd5e1; background: #0f172a; border: 1px dashed #334155;
+      border-radius: 8px; padding: 8px 10px; margin-bottom: 10px;
+    }
+    .think-box summary { cursor: pointer; color: #94a3b8; font-weight: 600; }
     .search-pill {
       display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #c7d2fe;
       background: #1e1b4b; border: 1px solid #4338ca; border-radius: 8px; padding: 5px 10px;
@@ -146,36 +146,27 @@ _CHAT_HTML = """<!DOCTYPE html>
   <header>
     <div class="brand">
       <span class="dot"></span>
-      <h1>Nova-Search LLM</h1>
+      <h1>Nova-Search</h1>
       <span id="model-info" class="badge">Loading model…</span>
     </div>
     <div class="controls">
       <label><input id="search-mode" type="checkbox" checked /> Web Search Agent</label>
-      <label>Temp <input id="temp" type="range" min="0" max="1" step="0.05" value="0.0" /><span id="temp-val">0.00</span></label>
-      <label>Max tokens <input id="max-tok" type="range" min="32" max="192" step="16" value="128" /><span id="max-tok-val">128</span></label>
+      <label><input id="force-search" type="checkbox" /> Always Search</label>
+      <label>Temp <input id="temp" type="range" min="0" max="1" step="0.05" value="0.2" /><span id="temp-val">0.20</span></label>
+      <label>Max tokens <input id="max-tok" type="range" min="64" max="512" step="32" value="256" /><span id="max-tok-val">256</span></label>
       <button type="button" class="clear-btn" onclick="clearChat()">Clear</button>
     </div>
   </header>
-  <div class="suggestions">
-    <button class="chip" onclick="ask('What is DeepSeek-V3?')">DeepSeek-V3?</button>
-    <button class="chip" onclick="ask('What is MuonClip?')">MuonClip?</button>
-    <button class="chip" onclick="ask('When did Chandrayaan-3 land on the Moon?')">Chandrayaan-3?</button>
-    <button class="chip" onclick="ask('What has the James Webb Space Telescope discovered?')">JWST discoveries?</button>
-    <button class="chip" onclick="ask('What is new in Python 3.13?')">Python 3.13?</button>
-    <button class="chip" onclick="ask('How tall is Mount Everest?')">Mount Everest?</button>
-    <button class="chip" onclick="ask('What is HTTP/3 and QUIC?')">HTTP/3 & QUIC?</button>
-    <button class="chip" onclick="ask('What is 12 * 12?')">12 * 12 (direct)</button>
-  </div>
   <main id="chat">
     <div class="msg assistant">
       <div class="role">Nova-Search</div>
-      Hello! I am <strong>Nova-Search</strong>, trained specifically for agentic web searching: I decide when to call <code>web_search</code>, formulate targeted queries, read live search snippets, and synthesize grounded answers with inline citations <code>[1]</code>. Click any prompt above or ask a question!
+      Ask any question! In <strong>Web Search Agent</strong> mode, the model decides when to search the web, inspects live results, and answers with inline citations <code>[1]</code>, <code>[2]</code>.
     </div>
   </main>
   <footer>
     <form id="chat-form">
-      <input id="prompt" type="text" placeholder="Ask Nova-Search anything..." autocomplete="off" required />
-      <button id="send-btn" type="submit">Search &amp; Ask</button>
+      <input id="prompt" type="text" placeholder="Ask anything — code, science, current events, math..." autocomplete="off" required />
+      <button id="send-btn" type="submit">Ask</button>
     </form>
   </footer>
   <script>
@@ -184,6 +175,7 @@ _CHAT_HTML = """<!DOCTYPE html>
     const promptInput = document.getElementById("prompt");
     const sendBtn = document.getElementById("send-btn");
     const searchModeEl = document.getElementById("search-mode");
+    const forceSearchEl = document.getElementById("force-search");
     const tempEl = document.getElementById("temp");
     const tempVal = document.getElementById("temp-val");
     const maxTokEl = document.getElementById("max-tok");
@@ -193,8 +185,8 @@ _CHAT_HTML = """<!DOCTYPE html>
     maxTokEl.oninput = () => maxTokVal.textContent = maxTokEl.value;
 
     fetch("/health").then(r => r.json()).then(d => {
-      const p = d.params && d.params.total ? (d.params.total / 1e6).toFixed(2) + "M params" : "";
-      document.getElementById("model-info").textContent = `${d.model} · ${p} · vocab ${d.vocab_size}`;
+      const p = d.params && d.params.total ? (d.params.total / 1e6).toFixed(1) + "M params" : "";
+      document.getElementById("model-info").textContent = `${d.model} · ${p}`;
     }).catch(() => {});
 
     function clearChat() { chatEl.innerHTML = ""; }
@@ -217,11 +209,6 @@ _CHAT_HTML = """<!DOCTYPE html>
       return { div, extras, body };
     }
 
-    function ask(text) {
-      promptInput.value = text;
-      form.dispatchEvent(new Event("submit"));
-    }
-
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = promptInput.value.trim();
@@ -232,12 +219,11 @@ _CHAT_HTML = """<!DOCTYPE html>
       sendBtn.disabled = true;
 
       const t0 = performance.now();
-      let chunks = 0;
       try {
         const useSearch = searchModeEl.checked;
         const endpoint = useSearch ? "/v1/search/chat" : "/v1/chat/completions";
         const payload = useSearch
-          ? { query: text, temperature: Number(tempEl.value), max_tokens: Number(maxTokEl.value), stream: true }
+          ? { query: text, temperature: Number(tempEl.value), max_tokens: Number(maxTokEl.value), force_search: forceSearchEl.checked, stream: true }
           : { model: "nova-llm", messages: [{ role: "user", content: text }], temperature: Number(tempEl.value), max_tokens: Number(maxTokEl.value), stream: true };
 
         const res = await fetch(endpoint, {
@@ -260,10 +246,16 @@ _CHAT_HTML = """<!DOCTYPE html>
             if (raw === "[DONE]") continue;
             try {
               const obj = JSON.parse(raw);
-              if (obj.type === "tool_call") {
+              if (obj.type === "thinking" && obj.content) {
+                const det = document.createElement("details");
+                det.className = "think-box";
+                det.innerHTML = `<summary>💭 Reasoning trace</summary><div></div>`;
+                det.querySelector("div").textContent = obj.content;
+                bot.extras.appendChild(det);
+              } else if (obj.type === "tool_call") {
                 const pill = document.createElement("div");
                 pill.className = "search-pill";
-                pill.textContent = `🔍 web_search("${obj.query}")`;
+                pill.textContent = `🔍 ${obj.name || "web_search"}("${obj.query}")`;
                 bot.extras.appendChild(pill);
               } else if (obj.type === "sources" && obj.sources?.length) {
                 const grid = document.createElement("div");
@@ -280,11 +272,9 @@ _CHAT_HTML = """<!DOCTYPE html>
                 bot.extras.appendChild(grid);
               } else if (obj.type === "delta" && obj.content) {
                 bot.body.textContent += obj.content;
-                chunks++;
                 chatEl.scrollTop = chatEl.scrollHeight;
               } else if (obj.choices?.[0]?.delta?.content) {
                 bot.body.textContent += obj.choices[0].delta.content;
-                chunks++;
                 chatEl.scrollTop = chatEl.scrollHeight;
               }
             } catch {}
@@ -309,16 +299,26 @@ _CHAT_HTML = """<!DOCTYPE html>
 
 
 def create_app(
-    model: NovaLM,
-    tokenizer: ByteBPETokenizer,
+    model: NovaLM | None = None,
+    tokenizer: ByteBPETokenizer | None = None,
     model_name: str = "nova-search",
     search_backend: Any | None = None,
+    backend: Any | None = None,
 ) -> FastAPI:
-    """Create FastAPI app with live Web-Search Chat UI, `/v1/search/chat`, and OpenAI `/v1/chat/completions`."""
+    """Create FastAPI app backed by EITHER `(model, tokenizer)` (NovaLM) OR a `ChatGeneratorBackend` (e.g. Llama-3.2-3B)."""
+    from nova_llm.agent.backends import NovaLMBackend
     from nova_llm.agent.search_agent import SearchAgent
     from nova_llm.agent.search_engine import HybridSearchBackend
 
-    app = FastAPI(title="Nova-Search LLM Inference Server", version="0.2.0")
+    if backend is None:
+        if model is None or tokenizer is None:
+            raise ValueError("Provide either `backend` or both `(model, tokenizer)`")
+        model.eval()
+        active_backend: Any = NovaLMBackend(model, tokenizer, model_name=model_name)
+    else:
+        active_backend = backend
+
+    app = FastAPI(title="Nova-Search LLM Inference Server", version="0.3.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -326,8 +326,11 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    model.eval()
-    agent = SearchAgent(model, tokenizer, search_backend=search_backend or HybridSearchBackend(), top_k_results=2)
+    agent = SearchAgent(
+        backend=active_backend,
+        search_backend=search_backend or HybridSearchBackend(),
+        top_k_results=3,
+    )
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -335,19 +338,22 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
+        info = active_backend.info()
         return {
             "status": "ok",
-            "model": model_name,
+            "model": info.get("model", model_name),
+            "backend": info.get("backend", "nova_lm"),
             "search_agent": True,
-            "params": model.count_parameters(),
-            "vocab_size": tokenizer.vocab_size,
+            "params": info.get("params", {}),
+            "vocab_size": info.get("vocab_size", 0),
         }
 
     @app.get("/v1/models")
     def list_models() -> dict[str, Any]:
+        info = active_backend.info()
         return {
             "object": "list",
-            "data": [{"id": model_name, "object": "model", "owned_by": "nova-llm"}],
+            "data": [{"id": info.get("model", model_name), "object": "model", "owned_by": "nova-llm"}],
         }
 
     @app.post("/v1/search/chat")
@@ -374,6 +380,7 @@ def create_app(
         )
         return {
             "answer": res.answer,
+            "thinking": res.thinking,
             "used_search": res.used_search,
             "tool_calls": res.tool_calls,
             "sources": [s.to_dict() for s in res.sources],
@@ -381,40 +388,92 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     def chat_completions(req: ChatCompletionRequest) -> Any:
-        prompt_text = tokenizer.format_chat(
-            [m.model_dump() for m in req.messages],
-            add_generation_prompt=True,
-            enable_thinking=req.enable_thinking,
-        )
-        prompt_ids = torch.tensor(
-            [tokenizer.encode(prompt_text, add_bos=True, allow_special=True)], dtype=torch.long
-        )
-        stop_ids = [tokenizer.eos_id, tokenizer.special_to_id["<|im_end|>"]]
-        params = SamplingParams(
-            max_new_tokens=req.max_tokens,
-            temperature=req.temperature,
-            top_p=req.top_p,
-            top_k=req.top_k,
-            min_p=req.min_p,
-            repetition_penalty=req.repetition_penalty,
-            stop_token_ids=stop_ids,
-            stop_strings=["<|im_end|>", "<|eos|>"],
-        )
         req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
+        msgs = [m.model_dump() for m in req.messages]
 
+        # Native NovaLM fast path (preserves exact prompt/completion token usage counts)
+        if model is not None and tokenizer is not None and backend is None:
+            prompt_text = tokenizer.format_chat(
+                msgs, add_generation_prompt=True, enable_thinking=req.enable_thinking
+            )
+            prompt_ids = torch.tensor(
+                [tokenizer.encode(prompt_text, add_bos=True, allow_special=True)], dtype=torch.long
+            )
+            stop_ids = [tokenizer.eos_id, tokenizer.special_to_id["<|im_end|>"]]
+            params = SamplingParams(
+                max_new_tokens=req.max_tokens,
+                temperature=req.temperature,
+                top_p=req.top_p,
+                top_k=req.top_k,
+                min_p=req.min_p,
+                repetition_penalty=req.repetition_penalty,
+                stop_token_ids=stop_ids,
+                stop_strings=["<|im_end|>", "<|eos|>"],
+            )
+            if req.stream:
+                def event_stream():
+                    for chunk in stream_generate(model, prompt_ids, tokenizer, params=params):
+                        clean = chunk.replace("<|im_end|>", "").replace("<|eos|>", "")
+                        if not clean:
+                            continue
+                        data = {
+                            "id": req_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": req.model,
+                            "choices": [{"index": 0, "delta": {"content": clean}, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(data)}\n\n"
+                    done_chunk = {
+                        "id": req_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": req.model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }
+                    yield f"data: {json.dumps(done_chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+            res = generate(model, prompt_ids, params=params, tokenizer=tokenizer, use_cache=True)
+            content = (res.text or "").replace("<|im_end|>", "").replace("<|eos|>", "").strip()
+            return {
+                "id": req_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": req.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": int(prompt_ids.shape[1]),
+                    "completion_tokens": int(res.new_token_ids.shape[1]),
+                    "total_tokens": int(res.token_ids.shape[1]),
+                },
+            }
+
+        # Pluggable backend path (Llama 3.2 3B / Hugging Face / Unsloth)
         if req.stream:
-            def event_stream():
-                for chunk in stream_generate(model, prompt_ids, tokenizer, params=params):
-                    clean = chunk.replace("<|im_end|>", "").replace("<|eos|>", "")
-                    if not clean:
-                        continue
+            def hf_stream():
+                for chunk in active_backend.stream_chat(
+                    msgs,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_p=req.top_p,
+                    repetition_penalty=req.repetition_penalty,
+                ):
                     data = {
                         "id": req_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": req.model,
-                        "choices": [{"index": 0, "delta": {"content": clean}, "finish_reason": None}],
+                        "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
                     }
                     yield f"data: {json.dumps(data)}\n\n"
                 done_chunk = {
@@ -427,10 +486,15 @@ def create_app(
                 yield f"data: {json.dumps(done_chunk)}\n\n"
                 yield "data: [DONE]\n\n"
 
-            return StreamingResponse(event_stream(), media_type="text/event-stream")
+            return StreamingResponse(hf_stream(), media_type="text/event-stream")
 
-        res = generate(model, prompt_ids, params=params, tokenizer=tokenizer, use_cache=True)
-        content = (res.text or "").replace("<|im_end|>", "").replace("<|eos|>", "").strip()
+        content = active_backend.generate_chat(
+            msgs,
+            max_tokens=req.max_tokens,
+            temperature=req.temperature,
+            top_p=req.top_p,
+            repetition_penalty=req.repetition_penalty,
+        )
         return {
             "id": req_id,
             "object": "chat.completion",
@@ -443,11 +507,7 @@ def create_app(
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {
-                "prompt_tokens": int(prompt_ids.shape[1]),
-                "completion_tokens": int(res.new_token_ids.shape[1]),
-                "total_tokens": int(res.token_ids.shape[1]),
-            },
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
 
     return app

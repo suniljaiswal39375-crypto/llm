@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import html
 import math
 import os
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
@@ -337,14 +338,22 @@ class BM25LocalWebIndex:
 
 
 class LiveHTTPWebBackend:
-    """Production live web-search adapter (Tavily / Serper / Brave / GitHub Repo Search).
+    """Production live web-search adapter (Tavily / Serper / Brave / Free DuckDuckGo + Wikipedia / GitHub).
 
-    Automatically activates when an API key env var is present (`TAVILY_API_KEY`,
-    `SERPER_API_KEY`, `BRAVE_API_KEY`, or `NOVA_ENABLE_GITHUB_SEARCH=1`).
+    Priority order:
+      1. `TAVILY_API_KEY` (Tavily AI Search)
+      2. `SERPER_API_KEY` (Google Search via Serper)
+      3. `BRAVE_API_KEY` (Brave Search API)
+      4. `enable_free_web=True` or `NOVA_LIVE_WEB=1` -> Free DuckDuckGo HTML + Wikipedia API (ZERO API key!)
+      5. `NOVA_ENABLE_GITHUB_SEARCH=1` -> GitHub Repositories API
     """
 
-    def __init__(self, timeout: float = 8.0) -> None:
+    def __init__(self, timeout: float = 8.0, enable_free_web: bool | None = None) -> None:
         self.timeout = timeout
+        if enable_free_web is None:
+            self.enable_free_web = os.getenv("NOVA_LIVE_WEB", "0") == "1"
+        else:
+            self.enable_free_web = enable_free_web
 
     def search(self, query: str, top_k: int = 3) -> list[SearchResult]:
         tavily_key = os.getenv("TAVILY_API_KEY")
@@ -359,10 +368,109 @@ class LiveHTTPWebBackend:
         if brave_key:
             return self._search_brave(query, brave_key, top_k)
 
+        if self.enable_free_web:
+            ddg = self._search_duckduckgo_html(query, top_k)
+            if ddg:
+                return ddg
+            wiki = self._search_wikipedia(query, top_k)
+            if wiki:
+                return wiki
+
         if os.getenv("NOVA_ENABLE_GITHUB_SEARCH") == "1":
             return self._search_github(query, top_k)
 
         return []
+
+    @staticmethod
+    def parse_duckduckgo_html(page_html: str, top_k: int = 3) -> list[SearchResult]:
+        """Parse DuckDuckGo HTML search results cleanly without external HTML parser deps."""
+        link_re = re.compile(
+            r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        snip_re = re.compile(
+            r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|<div[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        tag_re = re.compile(r"<[^>]+>")
+
+        links = link_re.findall(page_html)
+        snips = [a or b for a, b in snip_re.findall(page_html)]
+        out: list[SearchResult] = []
+        for i, (raw_href, raw_title) in enumerate(links[:top_k], start=1):
+            href = html.unescape(raw_href)
+            if "uddg=" in href:
+                qs = parse_qs(urlparse(href).query)
+                if "uddg" in qs:
+                    href = unquote(qs["uddg"][0])
+            if href.startswith("//"):
+                href = "https:" + href
+            title = re.sub(r"\s+", " ", html.unescape(tag_re.sub("", raw_title))).strip()
+            snippet = ""
+            if i - 1 < len(snips):
+                snippet = re.sub(r"\s+", " ", html.unescape(tag_re.sub("", snips[i - 1]))).strip()
+            out.append(
+                SearchResult(
+                    id=i,
+                    title=title or "Web Result",
+                    url=href,
+                    snippet=snippet[:400],
+                    date="live",
+                    domain=urlparse(href).netloc or "web",
+                    score=round(1.0 / i, 4),
+                )
+            )
+        return out
+
+    def _search_duckduckgo_html(self, query: str, top_k: int) -> list[SearchResult]:
+        try:
+            resp = httpx.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": query},
+                headers={"User-Agent": "Mozilla/5.0 (compatible; NovaSearchBot/1.0)"},
+                timeout=self.timeout,
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            return self.parse_duckduckgo_html(resp.text, top_k=top_k)
+        except Exception:
+            return []
+
+    def _search_wikipedia(self, query: str, top_k: int) -> list[SearchResult]:
+        try:
+            resp = httpx.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srlimit": top_k,
+                    "format": "json",
+                },
+                headers={"User-Agent": "NovaSearchBot/1.0"},
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            tag_re = re.compile(r"<[^>]+>")
+            out: list[SearchResult] = []
+            for i, item in enumerate(resp.json().get("query", {}).get("search", [])[:top_k], start=1):
+                title = item.get("title", "Wikipedia")
+                slug = title.replace(" ", "_")
+                snip = html.unescape(tag_re.sub("", item.get("snippet", ""))).strip()
+                out.append(
+                    SearchResult(
+                        id=i,
+                        title=title,
+                        url=f"https://en.wikipedia.org/wiki/{slug}",
+                        snippet=snip[:400],
+                        date=(item.get("timestamp") or "live")[:10],
+                        domain="en.wikipedia.org",
+                        score=round(1.0 / i, 4),
+                    )
+                )
+            return out
+        except Exception:
+            return []
 
     def _search_tavily(self, query: str, api_key: str, top_k: int) -> list[SearchResult]:
         resp = httpx.post(
