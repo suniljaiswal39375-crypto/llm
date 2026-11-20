@@ -1,0 +1,15 @@
+# Kimi Linear / OLMo Hybrid style 3:1 Gated DeltaNet-2 + Global GQA Hybrid Model
+vocab_size: 32000
+d_model: 512
+n_layers: 8
+n_heads: 8
+n_kv_heads: 4
+max_seq_len: 8192
+attention_type: hybrid_linear
+linear_attn_ratio: 3
+linear_conv_kernel: 4
+qk_norm: true
+rope_theta: 500000.0
+norm_type: rmsnorm
+sandwich_norm: true
+z_loss_weight: 0.0001

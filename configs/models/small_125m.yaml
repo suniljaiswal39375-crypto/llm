@@ -1,0 +1,17 @@
+# 125M dense modern decoder (Qwen3 / OLMo 3 blueprint: GQA + QK-Norm + SwiGLU + RoPE)
+vocab_size: 32000
+d_model: 768
+n_layers: 12
+n_heads: 12
+n_kv_heads: 4
+max_seq_len: 2048
+attention_type: gqa
+qk_norm: true
+sliding_window: 512
+swa_ratio: 3
+rope_theta: 500000.0
+norm_type: rmsnorm
+sandwich_norm: false
+tie_word_embeddings: true
+z_loss_weight: 0.0001
+mtp_depth: 1

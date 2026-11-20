@@ -1,0 +1,38 @@
+# Pre-training preset using Hybrid MuonClip (QK-Clip) + WSD LR schedule
+output_dir: runs/pretrain_muonclip
+seed: 42
+max_steps: 200
+micro_batch_size: 4
+grad_accum_steps: 4
+seq_len: 256
+precision: bf16
+compile_model: false
+activation_checkpointing: false
+distributed: none
+eval_interval: 50
+eval_steps: 5
+log_interval: 10
+save_interval: 100
+model:
+  vocab_size: 1024
+  d_model: 128
+  n_layers: 4
+  n_heads: 4
+  n_kv_heads: 2
+  max_seq_len: 256
+  attention_type: gqa
+  qk_norm: true
+  sandwich_norm: true
+  z_loss_weight: 0.0001
+  mtp_depth: 1
+optim:
+  optimizer: muonclip
+  lr: 0.0005
+  muon_lr: 0.002
+  min_lr_ratio: 0.1
+  weight_decay: 0.1
+  qk_clip_tau: 100.0
+  grad_clip: 1.0
+  lr_schedule: wsd
+  warmup_steps: 20
+  decay_steps: 40

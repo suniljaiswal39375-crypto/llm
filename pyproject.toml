@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nova-llm"
+version = "0.1.0"
+description = "Frontier 2026 modular LLM engineering suite: SuperBPE, GQA/MLA/Gated-DeltaNet/MoE, MuonClip, FSDP2, SFT/DPO/DAPO/GSPO, Speculative Decoding & Evaluation."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.5.0",
+    "numpy>=1.26.0",
+    "pyyaml>=6.0",
+    "safetensors>=0.4.3",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+    "ruff>=0.6.0",
+]
+gpu = [
+    "liger-kernel>=0.5.0",
+    "torchao>=0.8.0",
+]
+eval = [
+    "lm-eval>=0.4.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
